@@ -1,4 +1,4 @@
-name: null
+name: metamtl-rl
 channels:
   - pytorch
   - pyviz
