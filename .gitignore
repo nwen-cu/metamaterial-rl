@@ -161,3 +161,9 @@ temp/
 
 # Archived files
 old_files/
+
+# External examples
+examples/
+
+# Neptune Logger
+.neptune/
