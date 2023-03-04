@@ -235,7 +235,7 @@ def run(data=None):
 
     start_time = datetime.now()
 
-    extraction_resolution = 4.5
+    extraction_resolution = board_size[0] / 20
 
     m = pv.read(str(workdir / 'case_t0001.vtu'))
     m.set_active_scalars('temperature')

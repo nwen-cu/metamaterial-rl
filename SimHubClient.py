@@ -163,11 +163,8 @@ class SimHubClient:
         
         self.submitted_tasks = list()
         self.result_cache = LRU(cache_size)
-        
-        self.json_time = []
-        self.query_time = []
-        self.insert_time = []
-        self.submit_time = []
+        self.cache_loading_count = 0
+
         
     def close(self):
         self._server.close()
@@ -232,7 +229,8 @@ class SimHubClient:
         
         # Check local cache
         if input_hash in self.result_cache:
-            ...  # TODO implement local cache
+            self.cache_loading_count += 1
+            return input_hash, self.result_cache[input_hash]
         
         # Check database
         task = self._db.tasks.find_one({'experiment': self.experiment_name, 
@@ -293,7 +291,22 @@ class SimHubClient:
         self.submitted_tasks.append((input_hash, TaskSubmissionStatus.SUBMITTED))
         return input_hash, None
     
+    def poll_task_result(self, input_hash: str) -> Dict[str, Any] | None:
+        if input_hash in self.result_cache:
+            return self.result_cache[input_hash]
+        else:
+            task = self._db.tasks.find_one({'experiment': self.experiment_name, 
+                                            'input_hash': input_hash})
+            if task['status'] == 'done' or task['status'] == 'failed':
+                task = unpack_task_data(task)
+                # TODO implement input_files and output_files
+                self.result_cache[input_hash] = task
+                return task
+            else:
+                return None
+    
     def wait(self, interval: float = 10, print_stats: bool = True, progress_bar: bool = True):
+        if len(self.submitted_tasks) == 0: return
         existed = 0
         duplicated = 0
         submitted = 0
@@ -305,9 +318,11 @@ class SimHubClient:
             elif task[1] == TaskSubmissionStatus.SUBMITTED:
                 submitted += 1
         if print_stats:
-            print(f'Existed: {existed}({existed / len(self.submitted_tasks) * 100:.2f}%)')
-            print(f'Duplicated: {duplicated}({duplicated / len(self.submitted_tasks) * 100:.2f}%)')
-            print(f'New: {submitted}({submitted / len(self.submitted_tasks) * 100:.2f}%)')
+            total_tasks = len(self.submitted_tasks) + self.cache_loading_count
+            print(f'Cached: {self.cache_loading_count}({self.cache_loading_count / total_tasks * 100:.2f}%)')
+            print(f'Loaded: {existed}({existed / total_tasks * 100:.2f}%)')
+            print(f'Duplicated: {duplicated}({duplicated / total_tasks * 100:.2f}%)')
+            print(f'New: {submitted}({submitted / total_tasks * 100:.2f}%)')
         if progress_bar:
             pbar = tqdm(total=len(self.submitted_tasks))
         results = [None] * len(self.submitted_tasks)
@@ -320,16 +335,9 @@ class SimHubClient:
                     continue
                 time.sleep(min(interval / len(self.submitted_tasks), 0.1))
                 input_hash, status = self.submitted_tasks[i]
-                if input_hash in self.result_cache:
-                    results[i] = self.result_cache[input_hash]
-                else:
-                    task = self._db.tasks.find_one({'experiment': self.experiment_name, 
-                                                    'input_hash': input_hash})
-                    if task['status'] == 'done' or task['status'] == 'failed':
-                        task = unpack_task_data(task)
-                        # TODO implement input_files and output_files
-                        self.result_cache[input_hash] = task
-                        results[i] = task
+                task_result = poll_task_result(input_hash)
+                if task_result:
+                    results[i] = task_result
                 if progress_bar and results[i]:
                     pbar.update(1)
                     updated += 1
@@ -347,13 +355,19 @@ class SimHubClient:
             elif result['status'] == 'failed':
                 failed.append(result)
         if print_stats:
-            print(f'Successful: {len(successful)}({len(successful) / len(self.submitted_tasks) * 100:.2f}%)')
-            print(f'Failed: {len(failed)}({len(failed) / len(self.submitted_tasks) * 100:.2f}%)')
-        
-        return results, successful, failed
+            total_tasks = len(self.submitted_tasks) + self.cache_loading_count
+            print(f'Successful: {len(successful)}({len(successful) / total_tasks * 100:.2f}%)')
+            print(f'Failed: {len(failed)}({len(failed) / total_tasks * 100:.2f}%)')
+            
+    def wait_for_task(self, input_hash: str) -> Dict[str, Any]:
+        while not (task_result:= self.poll_task_result(input_hash)):
+            time.sleep(0.5)
+        return task_result
+            
     
     def get_result(self, input_hash: str) -> Dict[str, Any]:
         return self.result_cache[input_hash]
 
     def clear_tasks(self):
         self.submitted_tasks.clear()
+        self.cache_loading_count = 0
