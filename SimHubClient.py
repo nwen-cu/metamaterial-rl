@@ -335,10 +335,10 @@ class SimHubClient:
                     continue
                 time.sleep(min(interval / len(self.submitted_tasks), 0.1))
                 input_hash, status = self.submitted_tasks[i]
-                task_result = poll_task_result(input_hash)
+                task_result = self.poll_task_result(input_hash)
                 if task_result:
                     results[i] = task_result
-                if progress_bar and results[i]:
+                if progress_bar and task_result:
                     pbar.update(1)
                     updated += 1
             # if progress_bar:

@@ -168,3 +168,10 @@ examples/
 
 # Neptune Logger
 .neptune/
+
+
+debug_files/
+generated_images/
+
+*Test.ipynb
+*Playground.ipynb

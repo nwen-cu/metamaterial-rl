@@ -234,15 +234,17 @@ def run(data=None):
     solve_time = solve_time.total_seconds()
 
     start_time = datetime.now()
+    
+    sampling_size = units.shape * np.array(10)
 
-    extraction_resolution = board_size[0] / 20
+    extraction_resolution = board_size / sampling_size
 
     m = pv.read(str(workdir / 'case_t0001.vtu'))
     m.set_active_scalars('temperature')
 
     kdtree = cKDTree(m.points.astype(np.double))
 
-    sampling_mesh = np.mgrid[0.:board_size[0]:extraction_resolution, 0.:board_size[1]:extraction_resolution]
+    sampling_mesh = np.mgrid[0.:board_size[0]:extraction_resolution[0], 0.:board_size[1]:extraction_resolution[1]]
     sampling_spot = sampling_mesh.T.reshape((sampling_mesh.shape[1] * sampling_mesh.shape[2], 2))
     dist, index = kdtree.query(np.hstack((sampling_spot, np.zeros((sampling_spot.shape[0], 1), dtype=sampling_spot.dtype))))
 
