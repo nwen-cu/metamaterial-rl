@@ -107,10 +107,14 @@ def run(data=None):
 
         return infill_dimtags
 
-    units = data['input']['angle_matrix']
+    units = data['input'].get('angle_matrix', np.array([[45, -45], [-45, 45]]))
 
-    unit_size = (40, 40)
-    board_margin = (10, 10)
+    unit_size = data['input'].get('unit_size', (40, 40))
+    board_margin = data['input'].get('board_margin', (10, 10))
+    frame_width = data['input'].get('frame_width', 1.)
+    stripe_width = data['input'].get('stripe_width', 2.)
+    stripe_offset = data['input'].get('stripe_offset', 0.)
+    ignore_mass = data['input'].get('ignore_mass', 1.)
 
     units = np.flip(np.array(units).T, axis=1)
     unit_size = np.array(unit_size)
@@ -124,7 +128,7 @@ def run(data=None):
     it = np.nditer(units, flags=['multi_index'])
     for unit in it:
         offset = it.multi_index * unit_size + board_margin
-        unit_dimtags = create_unit(unit, offset)
+        unit_dimtags = create_unit(unit, offset, unit_size, frame_width, stripe_width, stripe_offset, ignore_mass)
         stripe_dimtags.extend(unit_dimtags)
 
     factory.synchronize()

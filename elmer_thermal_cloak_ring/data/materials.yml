@@ -1,0 +1,20 @@
+silicone_rubber_1:
+  Density: 2.8
+  Heat Capacity: 1000
+  Heat Conductivity: 12
+steel1010:
+  Density: 7.87
+  Heat Capacity: 448
+  Heat Conductivity: 51.9
+alumina:
+  Density: 3.8
+  Heat Capacity: 880
+  Heat Conductivity: 25.6
+silicone_rubber_2:
+  Density: 2.2
+  Heat Capacity: 1000
+  Heat Conductivity: 1.5
+PDMS:
+  Density: 1
+  Heat Capacity: 1450
+  Heat Conductivity: 0.15

@@ -23,8 +23,6 @@ from pymongo import MongoClient
 from gridfs import GridFS
 import datajson
 
-import paho.mqtt.client as mqtt
-
 try:
     from yaml import CLoader as Loader, CDumper as Dumper
 except ImportError:
@@ -60,78 +58,119 @@ def unpack_task_data(task: Dict[str, Any]) -> Dict[str, Any]:
     
     return task
     
+    
+class RemoteTaskFuture:
+    def __init__(self, future_netref, input_hash, client):
+        self._future_netref = future_netref
+        self._input_hash = input_hash
+        self._done = False
+        self._result = None
+        self._client = client
+    
+    def done(self) -> bool:
+        if self._future_netref:
+            if self._future_netref.done():
+                self.result()
+                return True
+            else:
+                return False
+        else:
+            return self._done
+                
+    def result(self) -> Any:
+        if self._future_netref:
+            self._result = self._client._db.tasks.find_one({
+                'experiment': self._client.experiment_name,
+                'input_hash': self._input_hash
+            })
+            if 'input' in self._result:
+                self._result['input'] = datajson.load_json(self._result['input'])
+            if 'output' in self._result:
+                self._result['output'] = datajson.load_json(self._result['output'])
+            if 'output_files' in self._result:
+                # TODO Load files
+                ...
+            self._future_netref = None
+            self._done = True
+        return self._result
         
-
+        
+class RemoteTaskFutureCollection(List[RemoteTaskFuture]):
+    def wait(self, pull_interval: float = 5., progress_bar: bool = True):
+        if progress_bar:
+            pbar = tqdm(total=len(self))
+        pending_futures = list(self)
+        while len(pending_futures) > 0:
+            completed = []
+            for f in pending_futures:
+                if f.done():
+                    completed.append(f)
+            for f in completed:
+                pending_futures.remove(f)
+            if progress_bar:
+                pbar.update(len(completed))
+            time.sleep(pull_interval)
+        if progress_bar:
+            pbar.close()
+            
+    def results(self):
+        self.wait(progress_bar=False)
+        return [f.result() for f in self]
     
 class TaskSubmissionStatus(enum.Enum):
     SUBMITTED = 0  # A new task submitted to server
     DUPLICATED = 1   # A task shared the same input hash already queued on server
     EXISTED = 2  # A task already existed in the database
 
+    
+@rpyc.service
+class ClientService(rpyc.Service):
+    @rpyc.exposed
+    def print(self, *args, **kwargs):
+        print(*args, **kwargs)
+        
+    @rpyc.exposed
+    def debug(self, *args, **kwargs):
+        with open('debug.log', 'a') as fp:
+            print(*args, **kwargs, file=fp)
+
         
 class SimHubClient:
-    def __init__(self, control_node_ip: str, control_node_port: int = 1883,
+    def __init__(self, control_node_ip: str, control_node_port: int = 44444, 
+                 database_ip: str | None = None, database_port: int = 40000, 
                  cache_size: int = 10000):
         
-        self.session_id = str(uuid.uuid4())
+        self.control_node_ip = control_node_ip
+        self.control_node_port = control_node_port
+        self.database_ip = database_ip if database_ip else control_node_ip
+        self.database_port = database_port
+        
+        self._conn = rpyc.connect(self.control_node_ip, self.control_node_port, 
+                                  service=ClientService, 
+                                  config={
+                                      'safe_attrs': dict().__dir__() + iter(()).__dir__(),
+                                      'sync_request_timeout': None,
+                                  })
+
+        self._server = self._conn.root
+        
+        self._db = MongoClient(self.database_ip, self.database_port).simdb
+        self._dbfs = GridFS(self._db)
+        
+        self.session_id = self._server.session_id()
+        
+        self.experiment_name = None
         
         self._closed = False
         
         self.submitted_tasks = list()
         self.result_cache = LRU(cache_size)
         self.cache_loading_count = 0
-        
-        self.server_state = 'offline'
-        
-        self.control_node_ip = control_node_ip
-        self.control_node_port = control_node_port
-        
-        self._db = None
-        self._dbfs = None
-        
-        self.mqttc = mqtt.Client()
-        # self.mqttc.on_connect = self.on_connect
-        # self.mqttc.on_message = self.on_message
-        
-        
-        self.mqttc.connect(control_node_ip, control_node_port)
-        
-        self.mqttc.subscribe('simhub/server')
-        
-        
-        self.mqttc.subscribe('simhub/database')
-        self.mqttc.message_callback_add('simhub/database', self.update_database_connection)
-        
-        self.mqttc.subscribe(f'simhub/sessions/{self.session_id}')
-        self.mqttc.message_callback_add(f'simhub/sessions/{self.session_id}', self.receive_session_msg)
-        
-        self.mqttc.loop_start()
-        
-        print('Waiting for database connection..')
-        while self._db is None:
-            ...
-        print('Connected to database')
-        
-        
-    def update_server_state(self, mqttc, userdata, msg):
-        payload = json.loads(msg.payload.decode("utf-8"))
-        self.server_state = payload['server_state']
-        
-    def update_database_connection(self, mqttc, userdata, msg):
-        payload = json.loads(msg.payload.decode("utf-8"))
-        self.database_ip = payload['db_host']
-        self.database_port = int(payload['db_port'])
-        
-        self._db = MongoClient(self.database_ip, self.database_port).simdb
-        self._dbfs = GridFS(self._db)
-        
-                
-    def receive_session_msg(self, mqttc, userdata, msg):
-        ...
-        
+
         
     def close(self):
-        self.mqttc.publish(f'simhub/sessions/{self.session_id}', '{"action": "end_session"}')
+        self._server.close()
+        self._conn.close()
         self._db.client.close()
         self._closed = True
 
@@ -143,6 +182,21 @@ class SimHubClient:
             exp = yaml.load(fp, Loader=Loader)
         
         self.experiment_name = exp['ExperimentName']
+        
+        self._server.set_experiment(exp['ExperimentName'])
+        
+        script_files = []
+        for file in exp['ScriptFiles']:
+            path = (experiment_source_dir / file).resolve(strict=True)
+            print(path)
+            # TODO set permission for server user to read the file
+            script_files.append(str(path))
+        data_files = []
+        for file in exp['DataFiles']:
+            path = (experiment_source_dir / file).resolve(strict=True)
+            print(path)
+            # TODO set permission for server user to read the file
+            data_files.append(str(path))
             
         script_tarfo = io.BytesIO()
         script_tarfile = tarfile.open(fileobj=script_tarfo, mode='w')
@@ -162,16 +216,13 @@ class SimHubClient:
         data_file_id = self._dbfs.put(data_tarfo, filename=f'{self.experiment_name}-data-{self.session_id}')
         data_tarfo.close()
         
-        self.mqttc.will_set(f'simhub/sessions/{self.session_id}', '{"action": "end_session"}')
+        script_file_id, data_file_id
         
-        self.mqttc.publish('simhub/sessions', json.dumps(
-            {
-                'session_id': self.session_id, 
-                'experiment_config': exp,
-            }
-        ))
-
-
+        self._server.initialize_experiment_workspace(exp['WorkspaceDir'], script_files, data_files)
+        
+        self._server.create_parallel_app(exp['Run'], exp.get('TaskResources'))
+        
+        self._server.initialize_experiment_executors(exp['PreferedNodes'], exp['Modules'], exp['CondaEnvironment'])
         
     def submit_task(self, input_data: Dict[str, Any]):
         """

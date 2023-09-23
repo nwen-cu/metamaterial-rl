@@ -1,0 +1,8 @@
+! ----- names for bodies -----
+$ region0 = 1
+$ region1 = 2
+$ region2 = 3
+$ region3 = 4
+! ----- names for boundaries -----
+$ left_bound = 5
+$ right_bound = 6
